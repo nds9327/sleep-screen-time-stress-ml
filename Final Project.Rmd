@@ -1,0 +1,703 @@
+---
+title: "Final Project"
+author: 'Nandanie Singh (NetID: nds9327)'
+date: "2026-04-21"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+## Research Question
+This project aims to examine the relationship between sleep duration, screen time, and stress among individuals aged 18 to 45. Specifically, it will address the question: 
+
+Are sleep duration and screen time significantly associated with stress levels in individuals aged 18 to 45, and to what extent do reduced sleep and increased screen time contribute to higher stress?
+
+#######################################################################
+## Packages Required 
+
+```{r message=FALSE, warning=FALSE}
+
+# Load required packages
+
+## Used for data importing, cleaning, manipulation, and visualization (includes dplyr, ggplot2)
+library(tidyverse) 
+## Used to build decision tree models for capturing non-linear relationships
+library(tree) 
+## Used to build random forest models, which improve prediction by combining multiple trees
+library(randomForest)
+## Used for K-Nearest Neighbors (KNN) regression, a distance-based prediction method
+library(FNN) 
+## Used for creating visualizations
+library(ggplot2) 
+```
+
+#######################################################################
+## Data Preparation 
+
+### Data Source/Description 
+The dataset used for this project is the Sleep, Screen Time and Stress Analysis dataset, which is publicly available on Kaggle: https://www.kaggle.com/datasets/jayjoshi37/sleep-screen-time-and-stress-analysis?resource=download. It contains 15,000 observations and 13 features examining the relationship between smartphone usage, sleep patterns, and stress levels. The dataset includes the following types of information: demographic information (age, gender, occupation), daily smartphone usage patterns, sleep duration and sleep quality indicators, lifestyle factors such as caffeine intake and physical activity, and stress and mental fatigue indicators. 
+
+### Data Importing
+
+The dataset was imported into R using functions from the tidyverse package. 
+
+```{r}
+# Import Sleep, Screen Time and Stress Analysis dataset
+# Skipping the first row because it contains a title ("FPDataset") and not the actual column names
+
+data <- read.csv("FPDataset.csv", skip = 1) 
+
+```
+
+### Viewing Raw data 
+```{r} 
+# Shows dataset size: number of rows (observations) and columns (variables)
+dim(data)
+
+# Shows first 6 rows of data including all variables (quick preview of data)
+head(data)
+
+# Shows structure of data: variable names, data types (numeric, factor, etcs.) & sample values 
+str(data)
+
+# Shows summary statistics of each variable (min, 1st quartile, median, mean, 3rd quartile, max)
+summary(data)
+```
+
+### Data Cleaning and Preparation 
+```{r} 
+# Restrict the dataset to individuals aged 18–45 so it aligns with the research question
+data <- data[data$age >= 18 & data$age <= 45, ]
+
+# Remove rows with missing values to make sure the analysis is based on complete observations
+data <- na.omit(data)
+
+# Convert categorical variables to factors 
+# So R treats them as categories rather than numeric/text values in models
+data$gender <- as.factor(data$gender)
+data$occupation <- as.factor(data$occupation)
+
+# Remove duplicate rows to avoid counting the same observation more than once
+data <- unique(data)
+
+# Use box plots to visually check for potential outliers in key continuous variables
+par(mfrow = c(1,3))
+boxplot(data$sleep_duration_hours, main = "Sleep Duration")
+boxplot(data$daily_screen_time_hours, main = "Screen Time")
+boxplot(data$stress_level, main = "Stress Level")
+
+
+# Set a seed so the random sample is reproducible
+set.seed(123)
+
+# Take a random sample of 5000 observations to make the dataset more manageable
+data <- data[sample(nrow(data), 5000), ]
+
+# Final dataset
+clean_data <- data
+
+```
+
+#######################################################################
+## Descriptive Analysis
+```{r} 
+# Check the number of observations and variables after cleaning to see how the dataset changed
+dim(clean_data)
+
+# View the first few rows to confirm that the cleaning steps were applied correctly
+head(clean_data)
+
+# Examine the structure to make sure variables have the correct data types (e.g., factors vs numeric)
+str(clean_data)
+
+# Look at summary statistics to understand the distribution of variables after cleaning
+summary(clean_data)
+```
+Interperation: 
+The study sample consisted of 5,000 individuals aged 18 to 45, with an average age of approximately 31.7 years and a fairly even distribution between males and females.
+
+On average, participants reported about 5.47 hours of daily screen time, with values ranging from 1 to 10 hours. Sleep duration averaged around 6.54 hours per night.
+
+The mean stress level was approximately 6.96, with values ranging from 1 to 10, indicating substantial variability in stress across individuals.
+
+Other variables also showed variation, with average caffeine intake around 2 cups per day and physical activity around 59 minutes.
+
+Overall, the data show considerable variability across key variables, which supports further analysis of the relationships between screen time, sleep, and stress.
+
+#######################################################################
+## Exploratory Data Analysis (EDA)
+
+### Data Splitting (Training and Testing Sets)
+```{r}
+# Set a seed so the random split is reproducible
+# This ensures the same training and testing sets are created each time the code is run
+set.seed(123)
+
+# Split the cleaned dataset into training and testing sets (80/20 split)
+# 80% of observations will be used to train/build the models
+# 20% of observations will be held out and used to evaluate model performance
+train_ind <- sample(1:nrow(clean_data), size = floor(0.8 * nrow(clean_data)))
+train <- clean_data[train_ind, ]
+test <- clean_data[-train_ind, ]
+```
+
+### Linear Regression Model
+```{r} 
+# Fit a linear regression model using sleep duration and screen time as predictors of stress level
+# This model is used to examine the main relationship of interest in the research question
+lm_model <- lm(stress_level ~ ., data = train)
+
+# Model results (coefficients, p-values, and overall fit)
+summary(lm_model)
+
+# Generate predicted stress values for the test dataset
+pred_lm <- predict(lm_model, newdata = test)
+
+# Calculate Mean Squared Error (MSE) to evaluate how accurate the predictions are
+# Lower MSE indicates better model performance
+mse_lm <- mean((test$stress_level - pred_lm)^2)
+mse_lm
+
+# RMSE
+rmse_lm <- sqrt(mean((test$stress_level - pred_lm)^2))
+rmse_lm
+
+# MAE
+mae_lm <- mean(abs(test$stress_level - pred_lm))
+mae_lm
+
+# R-squared
+ss_total <- sum((test$stress_level - mean(test$stress_level))^2)
+ss_res_lm <- sum((test$stress_level - pred_lm)^2)
+r2_lm <- 1 - (ss_res_lm / ss_total)
+r2_lm 
+
+# Check correlation between sleep duration and screen time
+# because if these variables are related, it may explain why sleep is not significant
+# in the regression model when both predictors are included
+cor(clean_data$sleep_duration_hours, clean_data$daily_screen_time_hours)
+```
+Interperation: 
+The linear regression results show that daily screen time is strongly and positively associated with stress level. Specifically, for each additional hour of screen time, stress increases by about 0.92 units (p < 2e-16), which is highly significant. This suggests that screen time has a clear and consistent effect on stress in this dataset.
+
+In contrast, sleep duration was not statistically significant (beta = -0.01, p = 0.468), and the effect size is very close to zero, suggesting that sleep does not have a meaningful impact on stress in this model.
+
+The model had a Mean Squared Error (MSE) of approximately 1.742, which is relatively high compared to the other models tested. This indicates that while the model identifies a strong relationship between screen time and stress, it does not predict stress levels as accurately overall.
+
+We also checked the correlation between sleep and screen time, and it was very low (r = 0.028), meaning they are not really related. This suggests that sleep is not being “hidden” by screen time in the model, but instead just does not seem to be an important predictor of stress here.
+
+Overall, this model shows that screen time is the main factor associated with stress. However, the relatively high MSE suggests that a simple linear model does not fully capture the relationship.
+
+### Extended Linear Regression Model
+```{r}
+# Fit a second linear model that includes additional covariates
+# This is done to see whether adding more information improves prediction accuracy
+
+lm_model2 <- lm(stress_level ~ sleep_duration_hours + daily_screen_time_hours +
+                  caffeine_intake_cups + physical_activity_minutes + gender,
+                data = train)
+
+# View results to compare with the simpler model
+summary(lm_model2)
+
+# Generate predicted stress values for the testing dataset 
+pred_lm2 <- predict(lm_model2, newdata = test)
+
+# Calculate MSE for the extended linear regression model
+mse_lm2 <- mean((test$stress_level - pred_lm2)^2)
+mse_lm2
+
+# RMSE
+rmse_lm2 <- sqrt(mean((test$stress_level - pred_lm2)^2))
+
+# MAE
+mae_lm2 <- mean(abs(test$stress_level - pred_lm2))
+
+# R-squared
+ss_res_lm2 <- sum((test$stress_level - pred_lm2)^2)
+r2_lm2 <- 1 - (ss_res_lm2 / ss_total)
+r2_lm2 
+```
+Interperation:
+The extended linear regression model included additional variables such as caffeine intake, physical activity, and gender to see if they improved the model. However, the results were very similar to the simpler model. Daily screen time remained the only statistically significant predictor (p < 2e-16), while sleep duration, caffeine intake, physical activity, and gender were not significant.
+
+The Mean Squared Error (MSE) for this model was approximately 1.744, which is nearly identical to the simpler linear regression model (1.742). This shows that adding these extra variables did not improve the model’s ability to predict stress.
+
+This suggests that these additional variables do not have a strong independent effect on stress in a linear model. It is possible that they influence stress in more complex ways, but those patterns are not being captured here.
+
+Overall, even after adding more variables, screen time remains the main factor associated with stress, and the model still struggles to fully capture the relationship between the variables and stress.
+
+### Decision Trees
+```{r}
+# Fit a decision tree model using all available predictors in the training data. 
+# This will capture more complex and non-linear relationships
+# that may not be handled well by linear regression. 
+tree_model <- tree(stress_level ~ ., data = train)
+
+# Visualize the structure of the tree to see how the data is being split
+plot(tree_model)
+text(tree_model, pretty = 0)
+
+# Generate predicted stress values for the testing dataset 
+pred_tree <- predict(tree_model, newdata = test)
+
+# Calculate MSE for the decision tree model
+mse_tree <- mean((test$stress_level - pred_tree)^2)
+mse_tree
+
+# RMSE
+rmse_tree <- sqrt(mean((test$stress_level - pred_tree)^2))
+rmse_tree
+
+# MAE
+mae_tree <- mean(abs(test$stress_level - pred_tree))
+mae_tree 
+
+# R-squared
+ss_res_tree <- sum((test$stress_level - pred_tree)^2)
+r2_tree <- 1 - (ss_res_tree / ss_total)
+r2_tree
+```
+Interperation:
+The decision tree model had a Mean Squared Error (MSE) of approximately 0.936, which is much lower than the linear regression models (around 1.74). This means the decision tree predicts stress levels more accurately than the linear models.
+
+This suggests that the relationship between the variables and stress is not just a simple linear relationship. Instead of stress increasing steadily, it likely changes differently depending on certain values of the variables.
+
+The structure of the tree also shows that variables like mental fatigue are used to split the data into groups, which suggests that stress may behave differently across different types of individuals rather than following one overall trend.
+
+Overall, the better performance of the decision tree indicates that there are non-linear patterns in the data that are not being captured by the linear regression models.
+
+
+### Random Forest 
+```{r}
+# Fit a random forest model using all predictors in the training data. 
+# Random forest builds multiple trees and averages them, which often improves accuracy
+rf_model <- randomForest(stress_level ~ ., data = train)
+
+# Generate predicted stress values for the testing dataset 
+pred_rf <- predict(rf_model, newdata = test)
+
+# Calculate MSE for the random forest model
+mse_rf <- mean((test$stress_level - pred_rf)^2)
+mse_rf
+
+# RMSE
+rmse_rf <- sqrt(mean((test$stress_level - pred_rf)^2))
+rmse_rf
+
+# MAE
+mae_rf <- mean(abs(test$stress_level - pred_rf))
+mae_rf
+
+# R-squared
+ss_res_rf <- sum((test$stress_level - pred_rf)^2)
+r2_rf <- 1 - (ss_res_rf / ss_total)
+r2_rf
+```
+Interperation:
+The random forest model had the lowest Mean Squared Error (MSE) of approximately 0.402, which is much lower than both the decision tree (0.936) and the linear regression models (around 1.74). This means the random forest model had the best predictive performance out of all the models tested.
+
+The large decrease in MSE shows that the random forest is much better at capturing the patterns in the data. Unlike a single decision tree, random forest combines multiple trees, which allows it to reduce overfitting and produce more stable and accurate predictions.
+
+This suggests that the relationship between the variables and stress is complex and may involve multiple factors working together. For example, the effect of screen time on stress may vary depending on other variables like fatigue or activity levels.
+
+Overall, the strong performance of the random forest model indicates that stress is influenced by multiple variables working together, and that these relationships are better captured by more flexible models rather than simple linear approaches.
+
+### KNN
+```{r}
+# Select the two main predictor variables for the KNN model: 
+# sleep duration and daily screen time
+train_x <- train[, c("sleep_duration_hours", "daily_screen_time_hours")]
+test_x <- test[, c("sleep_duration_hours", "daily_screen_time_hours")]
+
+# Extract the outcome variable from the training data. 
+# This is the variable the model is trying to predict
+train_y <- train$stress_level
+
+# Scale the predictor variables in the training data
+# This step is necessary because KNN is a distance-based method.
+# KNN determines which observations are "nearest" to each other
+# So variables on larger scales can dominate the distance calculation
+# Scaling ensures that both predictors contribute more equally
+train_x_scaled <- scale(train_x)
+
+# Scale the testing data using the same center and scale values from the training data
+# This avoids data leakage and keeps transformations consistent
+test_x_scaled <- scale(test_x,
+                       center = attr(train_x_scaled, "scaled:center"),
+                       scale = attr(train_x_scaled, "scaled:scale"))
+
+# Fit the KNN regression model with k = 5
+# Each prediction is based on the average of the 5 nearest observations
+knn_pred <- knn.reg(train = train_x_scaled,
+                    test = test_x_scaled,
+                    y = train_y,
+                    k = 5)
+
+# Calculate MSE for the KNN model
+mse_knn <- mean((test$stress_level - knn_pred$pred)^2)
+mse_knn
+
+rmse_knn <- sqrt(mean((test$stress_level - knn_pred$pred)^2))
+rmse_knn 
+
+mae_knn <- mean(abs(test$stress_level - knn_pred$pred))
+mae_knn
+
+ss_res_knn <- sum((test$stress_level - knn_pred$pred)^2)
+r2_knn <- 1 - (ss_res_knn / ss_total)
+r2_knn 
+```
+Interperation:
+The KNN model had a Mean Squared Error (MSE) of approximately 1.818, which is the highest among all the models tested. This means it had the weakest predictive performance.
+
+Even after scaling the variables and using k = 5, the model did not perform as well as the others. Compared to the linear regression models (around 1.74) and especially the random forest model (0.402), KNN was not very accurate at predicting stress levels.
+
+This suggests that the relationship between the variables and stress is likely more complex and may involve interactions between multiple factors. However, these interactions were not directly tested in this analysis.
+
+Overall, the results show that KNN is not a good fit for this dataset, especially when compared to more flexible models like decision trees and random forests.
+
+### Model Comparison Using MSE 
+```{r} 
+# Combine all model MSE values into a single table
+# This makes it easy to compare which model performs best
+# Lower MSE = better predictive accuracy & best performing model
+
+model_results <- data.frame(
+  Model = c("Linear Regression",
+            "Extended Linear Regression",
+            "Decision Tree",
+            "Random Forest",
+            "KNN"),
+  MSE = c(mse_lm, mse_lm2, mse_tree, mse_rf, mse_knn)
+)
+
+# Display results 
+model_results
+
+# Combine all model MSE, RMSE, MAE, R2 values into a single table
+model_results <- data.frame(
+  Model = c("Linear Regression",
+            "Extended Linear Regression",
+            "Decision Tree",
+            "Random Forest",
+            "KNN"),
+  MSE = c(mse_lm, mse_lm2, mse_tree, mse_rf, mse_knn),
+  RMSE = c(rmse_lm, rmse_lm2, rmse_tree, rmse_rf, rmse_knn),
+  MAE = c(mae_lm, mae_lm2, mae_tree, mae_rf, mae_knn),
+  R2 = c(r2_lm, r2_lm2, r2_tree, r2_rf, r2_knn)
+)
+# Display results 
+model_results
+
+library(tibble)
+
+model_results_table <- tibble(
+  Model = c("Linear_Regression",
+            "Extended_Linear_Regression",
+            "Decision_Tree",
+            "Random_Forest",
+            "KNN"),
+  
+  MSE = c(mse_lm, mse_lm2, mse_tree, mse_rf, mse_knn),
+  
+  RMSE = c(rmse_lm, rmse_lm2, rmse_tree, rmse_rf, rmse_knn),
+  
+  MAE = c(mae_lm, mae_lm2, mae_tree, mae_rf, mae_knn),
+  
+  R2 = c(r2_lm, r2_lm2, r2_tree, r2_rf, r2_knn)
+)
+
+model_results_table
+
+
+model_results_table <- model_results_table %>%
+  mutate(across(-Model, round, 3))
+
+model_results_table
+
+library(knitr)
+
+kable(model_results_table, caption = "Model Performance Comparison")
+
+# ALL 
+library(tidyr)
+library(ggplot2)
+
+model_long <- pivot_longer(model_results,
+                           cols = c(MSE, RMSE, MAE, R2),
+                           names_to = "Metric",
+                           values_to = "Value")
+
+ggplot(model_long, aes(x = Model, y = Value, fill = Model)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~Metric, scales = "free") +
+  labs(title = "Model Performance Comparison (Test Set)",
+       x = "",
+       y = "Metric Value") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    strip.text = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Graph MSE 
+ggplot(model_results, aes(x = Model, y = MSE)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Comparison of Model Performance Using MSE",
+       x = "Model",
+       y = "Mean Squared Error") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Graph RSME 
+
+ggplot(model_results, aes(x = Model, y = RMSE)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Model Comparison Using RMSE",
+       x = "Model",
+       y = "RMSE") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Graph MAE 
+ggplot(model_results, aes(x = Model, y = MAE)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Model Comparison Using MAE",
+       x = "Model",
+       y = "Mean Absolute Error (MAE)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Graph R2 
+ggplot(model_results, aes(x = Model, y = R2)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Model Comparison Using R-squared",
+       x = "Model",
+       y = "R²") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+library(tidyr)
+library(ggplot2)
+
+# Convert table to long format for graphing
+model_results_long <- model_results_table %>%
+  pivot_longer(
+    cols = c(MSE, RMSE, MAE, R2),
+    names_to = "Metric",
+    values_to = "Value"
+  )
+
+# Faceted graph like the example you showed
+ggplot(model_results_long, aes(x = Model, y = Value, fill = Model)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(
+    title = "Model Performance Comparison (Test Set)",
+    x = "",
+    y = "Metric Value"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    strip.text = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# -----------------------------
+# Graph 1: Compare MSE across models
+# -----------------------------
+# Create a bar graph showing the MSE for each model
+# The model with the lowest bar (lowest MSE) performs best
+
+ggplot(model_results, aes(x = Model, y = MSE)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Comparison of Model Performance Using MSE",
+       x = "Model",
+       y = "Mean Squared Error") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# -----------------------------
+# Graph 2: Actual vs Predicted for Linear Regression
+# -----------------------------
+
+# Create a data frame containing actual and predicted stress values
+# for the linear regression model
+lm_plot_data <- data.frame(
+  Actual = test$stress_level,
+  Predicted = pred_lm
+)
+
+# Create a scatterplot of actual vs predicted stress values
+# The dashed diagonal line represents perfect prediction (predicted = actual)
+# Points closer to this line indicate better model performance
+ggplot(lm_plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(title = "Actual vs Predicted Stress Level: Linear Regression",
+       x = "Actual Stress Level",
+       y = "Predicted Stress Level") +
+  theme_minimal()
+
+
+# -----------------------------
+# Graph 3: Actual vs Predicted for Extended Linear Regression
+# -----------------------------
+
+# Create a data frame of actual and predicted stress values for the extended model
+lm2_plot_data <- data.frame(
+  Actual = test$stress_level,
+  Predicted = pred_lm2
+)
+
+# Plot actual vs predicted values for the extended linear regression model
+# This allows comparison with the simpler linear regression model
+# and assess whether adding variables improves prediction accuracy
+ggplot(lm2_plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(title = "Actual vs Predicted Stress Level: Extended Linear Regression",
+       x = "Actual Stress Level",
+       y = "Predicted Stress Level") +
+  theme_minimal()
+
+
+# -----------------------------
+# Graph 4: Actual vs Predicted for Decision Tree
+# -----------------------------
+
+# Create a data frame of actual and predicted stress values for the decision tree
+tree_plot_data <- data.frame(
+  Actual = test$stress_level,
+  Predicted = pred_tree
+)
+
+# Plot actual vs predicted values for the decision tree model
+# This helps evaluate how well the tree captures patterns in the data
+# and whether predictions align with observed values
+ggplot(tree_plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(title = "Actual vs Predicted Stress Level: Decision Tree",
+       x = "Actual Stress Level",
+       y = "Predicted Stress Level") +
+  theme_minimal()
+
+
+# -----------------------------
+# Graph 5: Actual vs Predicted for Random Forest
+# -----------------------------
+
+# Create a data frame of actual and predicted stress values for the random forest model
+rf_plot_data <- data.frame(
+  Actual = test$stress_level,
+  Predicted = pred_rf
+)
+
+# Plot actual vs predicted values for the random forest model
+# This helps show whether the predictions cluster close to the ideal line
+ggplot(rf_plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(title = "Actual vs Predicted Stress Level: Random Forest",
+       x = "Actual Stress Level",
+       y = "Predicted Stress Level") +
+  theme_minimal()
+
+
+# -----------------------------
+# Graph 6: Actual vs Predicted for KNN
+# -----------------------------
+
+# Create a data frame of actual and predicted stress values for the KNN model
+knn_plot_data <- data.frame(
+  Actual = test$stress_level,
+  Predicted = knn_pred$pred
+)
+
+# Plot actual vs predicted values for the KNN model
+# This provides a visual way to evaluate how well KNN predictions match actual values
+# and whether the model captures the relationship between variables effectively
+ggplot(knn_plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(title = "Actual vs Predicted Stress Level: KNN",
+       x = "Actual Stress Level",
+       y = "Predicted Stress Level") +
+  theme_minimal()
+```
+Interperation: 
+The graphs show clear differences in how well each model predicts stress.
+
+From the MSE graph, the random forest has the lowest error (0.402), followed by the decision tree (0.936), while the linear models are much higher (around 1.742–1.744) and KNN is the worst (1.818) . The random forest bar is much lower than the others, showing a big improvement in performance. The two linear models are almost identical, which confirms that adding more variables didn’t actually improve the model.
+
+This same pattern shows up in the actual vs predicted plots. The random forest points are tightly clustered around the diagonal line, meaning the predictions are very close to the actual values across most of the range. The decision tree also does better than the linear models, but still has some spread, which explains why its MSE is higher than random forest but lower than the linear models.
+
+The linear regression plots show more spread around the diagonal line, especially at higher stress values, meaning the model is picking up the general trend but not predicting very precisely. The extended model looks almost the same as the simple model, which again shows that the extra variables are not adding much.
+
+The KNN plot is the most scattered, with points spread further from the diagonal line and less clear structure. This shows that the model is not capturing the relationship well, which matches its high MSE.
+
+Overall, both the graph and the MSE values show the same pattern: more flexible models perform better. The random forest does the best because it can capture more complex patterns, while the linear models assume a simple relationship and don’t fit the data as well. KNN also performs poorly, suggesting that similarity-based methods are not effective for this dataset.
+
+This suggests that the relationship between the variables and stress is more complex than a simple linear relationship and is better captured by models that allow for non-linear patterns.
+
+## Further Analysis: Testing for Non-Linearity
+```{r}
+# Fit a regression model with both a linear and squared screen time term
+# to test whether the relationship between screen time and stress is non-linear
+lm_nonlinear <- lm(stress_level ~ daily_screen_time_hours +
+                     I(daily_screen_time_hours^2),
+                   data = train)
+
+# Display model results
+summary(lm_nonlinear)
+
+# Generate predicted stress values for the test dataset
+pred_nonlinear <- predict(lm_nonlinear, newdata = test)
+
+# Calculate MSE for the non-linear model
+mse_nonlinear <- mean((test$stress_level - pred_nonlinear)^2)
+mse_nonlinear
+
+# Plot screen time vs stress and compare linear (red dashed line)
+# and non-linear (blue curve) models to see which fits the data better
+ggplot(train, aes(x = daily_screen_time_hours, y = stress_level)) +
+  geom_point(alpha = 0.3) +
+  stat_smooth(method = "lm", formula = y ~ x, color = "red", linetype = "dashed") +  # linear
+  stat_smooth(method = "lm", formula = y ~ x + I(x^2), color = "blue") +  # non-linear
+  labs(title = "Linear vs Non-Linear Fit",
+       x = "Daily Screen Time (hours)",
+       y = "Stress Level") +
+  theme_minimal()
+```
+Interperation: 
+The non-linear model was used to test whether the relationship between screen time and stress follows a curved pattern rather than a straight line. The squared term for screen time was statistically significant (p < 2e-16), indicating that the relationship is not purely linear.
+
+The positive coefficient for screen time and negative coefficient for the squared term suggest that stress increases as screen time increases, but at a decreasing rate at higher levels of screen time.
+
+The Mean Squared Error (MSE) for this model was approximately 1.599, which is lower than the linear regression model (about 1.742), showing improved predictive performance.
+
+The graph supports this result, as the curved line fits the data better than the straight line, particularly at higher levels of screen time where the linear model begins to overestimate stress.
+
+Overall, these results confirm that the relationship between screen time and stress is better captured by a non-linear model.
+
+#######################################################################
+## Overall Results  
+Overall, the results of this analysis show that daily screen time is strongly associated with higher stress levels, while sleep duration does not appear to be a significant predictor in this dataset.
+
+The linear regression results show that screen time has a clear and consistent effect on stress, but the relatively high MSE indicates that a simple linear model does not fully capture the relationship.
+
+Comparing multiple models showed that more flexible approaches performed better. The decision tree and random forest models had much lower MSE values, with the random forest performing the best overall.
+
+The non-linear regression model further supports this, showing that the relationship between screen time and stress follows a curved pattern rather than a straight line, with the effect increasing at a decreasing rate.
+
+Overall, these findings suggest that screen time is an important factor related to stress, but the way it affects stress is more complex than a simple linear relationship.
+
+#######################################################################
