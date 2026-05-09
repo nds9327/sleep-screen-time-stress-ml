@@ -1,0 +1,974 @@
+---
+title: "Sleep, Screen Time and Stress Analysis Using Machine Learning Methods"
+author: "Nandanie Singh & Inusah Bihinaa Mohammed"
+date: "May 8, 2026"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(class)
+library(glmnet)
+library(pROC)
+library(knitr)
+library(reshape2)
+library(gridExtra)
+
+set.seed(123)
+```
+
+# Load Data
+```{r} 
+# Load dataset
+stress_data <- read_csv("FDAdataset.csv")
+
+# View structure
+str(stress_data)
+summary(stress_data)
+
+```
+
+# Prepare Data 
+```{r}
+# Restrict dataset to individuals ages 18 to 45
+# and randomly select 10,000 observations
+set.seed(123)
+
+stress_data <- stress_data %>%
+  filter(age >= 18, age <= 45) %>%
+  sample_n(10000)
+```
+
+```{r}
+# Convert categorical variables to factors
+stress_data <- stress_data %>%
+  mutate(
+    gender = as.factor(gender),
+    occupation = as.factor(occupation)
+  )
+
+# Remove user_id because it is only an identifier
+stress_data <- stress_data %>%
+  select(-user_id)
+
+# Create interaction term between sleep duration and screen time
+stress_data <- stress_data %>%
+  mutate(
+    sleep_screen_interaction = sleep_duration_hours * daily_screen_time_hours
+  )
+
+# Check missing values
+colSums(is.na(stress_data))
+```
+
+# Summary Statistics 
+```{r}
+# Summary statistics for all numeric variables
+summary(stress_data %>% select(where(is.numeric)))
+
+# Frequency table for gender
+table(stress_data$gender)
+
+# Frequency table for occupation
+table(stress_data$occupation)
+```
+
+# Correlation Analysis 
+```{r}
+# Select numeric variables for correlation analysis
+numeric_vars <- stress_data %>%
+  select(where(is.numeric))
+
+# Create correlation matrix
+cor_matrix <- cor(numeric_vars, use = "complete.obs")
+
+# View rounded correlation matrix
+round(cor_matrix, 2)
+
+# Convert correlation matrix to long format
+cor_long  <- melt(cor_matrix)
+
+# Correlation Heatmap
+ggplot(cor_long,
+       aes(x = Var1,
+           y = Var2,
+           fill = value)) +
+
+  geom_tile(color = "white") +
+
+  # Add correlation values
+  geom_text(aes(label = round(value, 2)),
+            size = 3) +
+
+  scale_fill_gradient2(
+    low = "white",
+    mid = "orange",
+    high = "darkred",
+    midpoint = 0,
+    limit = c(-1, 1),
+    name = "Correlation"
+  ) +
+
+  labs(
+    title = "Correlation Heatmap of Study Variables",
+    x = "",
+    y = ""
+  ) +
+
+  theme_minimal(base_size = 12) +
+
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    ),
+    panel.grid = element_blank(),
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    )
+  )
+
+# Correlations with Stress Level
+
+# Select numeric variables
+numeric_vars <- stress_data %>%
+  select(where(is.numeric))
+
+# Calculate correlations with stress level
+stress_cor <- cor(numeric_vars)[, "stress_level"]
+
+# Convert to dataframe
+stress_cor_table <- data.frame(
+  Variable = names(stress_cor),
+  Correlation = as.numeric(stress_cor)
+)
+
+# Remove stress level correlating with itself
+stress_cor_table <- stress_cor_table %>%
+  filter(Variable != "stress_level")
+
+# Sort by absolute correlation
+stress_cor_table <- stress_cor_table %>%
+  mutate(abs_cor = abs(Correlation)) %>%
+  arrange(desc(abs_cor))
+
+# Keep strongest relationships
+stress_cor_table <- stress_cor_table %>%
+  select(Variable, Correlation)
+
+# Display table
+kable(
+  stress_cor_table,
+  digits = 2,
+  caption = "Correlations Between Stress Level and Study Variables"
+)
+```
+
+# Exploratory Figures 
+```{r} 
+# Create stress group for EDA only
+eda_data <- stress_data %>%
+  mutate(
+    stress_group = ifelse(
+      stress_level > median(stress_level, na.rm = TRUE),
+      "High Stress",
+      "Low Stress"
+    ),
+    stress_group = factor(stress_group, levels = c("Low Stress", "High Stress"))
+  )
+
+# Plot stress outcome
+p1 <- ggplot(eda_data, aes(x = stress_group, fill = stress_group)) +
+  geom_bar(color = "black") +
+  labs(
+    title = "Distribution of Stress Outcome",
+    x = "Stress Status",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Plot sleep duration
+p2 <- ggplot(eda_data, aes(x = sleep_duration_hours)) +
+  geom_histogram(bins = 30, color = "black") +
+  labs(
+    title = "Distribution of Sleep Duration",
+    x = "Sleep Duration",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+
+# Plot screen time
+p3 <- ggplot(eda_data, aes(x = daily_screen_time_hours)) +
+  geom_histogram(bins = 30, color = "black") +
+  labs(
+    title = "Distribution of Screen Time",
+    x = "Daily Screen Time",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+
+# Plot mental fatigue
+p4 <- ggplot(eda_data, aes(x = mental_fatigue_score)) +
+  geom_histogram(bins = 30, color = "black") +
+  labs(
+    title = "Distribution of Mental Fatigue",
+    x = "Mental Fatigue Score",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+# Train-Test Split 
+```{r} 
+# Split data into training and testing sets
+set.seed(123)
+
+train_index <- sample(
+  seq_len(nrow(stress_data)),
+  size = 0.8 * nrow(stress_data)
+)
+
+train_data <- stress_data[train_index, ]
+test_data <- stress_data[-train_index, ]
+```
+
+# Create Binary Stress Outcome 
+```{r}
+# Use training-set median as cutoff
+cutoff <- median(train_data$stress_level, na.rm = TRUE)
+
+# Create binary stress outcome in training data
+train_data <- train_data %>%
+  mutate(
+    stress_binary = ifelse(
+      stress_level > cutoff,
+      "High Stress",
+      "Low Stress"
+    ),
+    stress_binary = factor(
+      stress_binary,
+      levels = c("Low Stress", "High Stress")
+    )
+  )
+
+# Create binary stress outcome in testing data
+test_data <- test_data %>%
+  mutate(
+    stress_binary = ifelse(
+      stress_level > cutoff,
+      "High Stress",
+      "Low Stress"
+    ),
+    stress_binary = factor(
+      stress_binary,
+      levels = c("Low Stress", "High Stress")
+    )
+  )
+
+# Check stress group balance
+table(train_data$stress_binary)
+table(test_data$stress_binary)
+```
+
+# Logistic Regression 
+```{r} 
+# Fit logistic regression model
+log_model <- glm(
+  stress_binary ~ sleep_duration_hours +
+    daily_screen_time_hours +
+    age +
+    caffeine_intake_cups +
+    sleep_quality_score +
+    phone_usage_before_sleep_minutes +
+    physical_activity_minutes +
+    notifications_received_per_day +
+    mental_fatigue_score +
+    gender +
+    occupation +
+    sleep_screen_interaction,
+  family = binomial,
+  data = train_data
+)
+
+summary(log_model)
+
+# Predict probabilities
+log_prob <- predict(
+  log_model,
+  newdata = test_data,
+  type = "response"
+)
+
+# Convert probabilities into predicted classes
+log_pred <- ifelse(
+  log_prob > 0.5,
+  "High Stress",
+  "Low Stress"
+)
+
+log_pred <- factor(
+  log_pred,
+  levels = c("Low Stress", "High Stress")
+)
+
+# Evaluate logistic regression
+log_cm <- confusionMatrix(
+  log_pred,
+  test_data$stress_binary,
+  positive = "High Stress"
+)
+
+log_cm
+
+# AUC
+roc_log <- roc(
+  test_data$stress_binary,
+  log_prob,
+  levels = c("Low Stress", "High Stress")
+)
+
+auc(roc_log)
+
+# Brier score
+actual_numeric <- ifelse(test_data$stress_binary == "High Stress", 1, 0)
+log_brier <- mean((log_prob - actual_numeric)^2)
+log_brier
+
+# Logistic Regression Coefficients Table
+log_results <- data.frame(
+  Variable = rownames(summary(log_model)$coefficients),
+  Estimate = round(summary(log_model)$coefficients[,1], 3),
+  Std_Error = round(summary(log_model)$coefficients[,2], 3),
+  P_Value = round(summary(log_model)$coefficients[,4], 4)
+)
+
+kable(
+  log_results,
+  caption = "Logistic Regression Results"
+)
+```
+
+# Decision Tree 
+```{r} 
+# Fit decision tree model
+tree_model <- train(
+  stress_binary ~ sleep_duration_hours +
+    daily_screen_time_hours +
+    age +
+    caffeine_intake_cups +
+    sleep_quality_score +
+    phone_usage_before_sleep_minutes +
+    physical_activity_minutes +
+    notifications_received_per_day +
+    mental_fatigue_score +
+    gender +
+    occupation +
+    sleep_screen_interaction,
+  data = train_data,
+  method = "rpart",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+tree_model
+
+# Predict classes
+tree_pred <- predict(
+  tree_model,
+  newdata = test_data
+)
+
+# Predict probabilities
+tree_prob <- predict(
+  tree_model,
+  newdata = test_data,
+  type = "prob"
+)[, "High Stress"]
+
+# Evaluate decision tree
+tree_cm <- confusionMatrix(
+  tree_pred,
+  test_data$stress_binary,
+  positive = "High Stress"
+)
+
+tree_cm
+
+# AUC
+roc_tree <- roc(
+  test_data$stress_binary,
+  tree_prob,
+  levels = c("Low Stress", "High Stress")
+)
+
+auc(roc_tree)
+
+# Brier score
+tree_brier <- mean((tree_prob - actual_numeric)^2)
+tree_brier
+```
+
+# Random Forest 
+```{r} 
+# Fit random forest model
+set.seed(123)
+
+rf_model <- randomForest(
+  stress_binary ~ sleep_duration_hours +
+    daily_screen_time_hours +
+    age +
+    caffeine_intake_cups +
+    sleep_quality_score +
+    phone_usage_before_sleep_minutes +
+    physical_activity_minutes +
+    notifications_received_per_day +
+    mental_fatigue_score +
+    gender +
+    occupation +
+    sleep_screen_interaction,
+  data = train_data,
+  ntree = 100,
+  importance = TRUE
+)
+
+# Predict classes
+rf_pred <- predict(
+  rf_model,
+  newdata = test_data
+)
+
+# Predict probabilities
+rf_prob <- predict(
+  rf_model,
+  newdata = test_data,
+  type = "prob"
+)[, "High Stress"]
+
+# Evaluate random forest
+rf_cm <- confusionMatrix(
+  rf_pred,
+  test_data$stress_binary,
+  positive = "High Stress"
+)
+
+rf_cm
+
+# AUC
+roc_rf <- roc(
+  test_data$stress_binary,
+  rf_prob,
+  levels = c("Low Stress", "High Stress")
+)
+
+auc(roc_rf)
+
+# Brier score
+rf_brier <- mean((rf_prob - actual_numeric)^2)
+rf_brier
+
+# Variable importance
+importance(rf_model)
+varImpPlot(rf_model, main = "Random Forest Variable Importance")
+```
+
+# KNN 
+```{r} 
+# Prepare data for KNN
+train_knn <- train_data %>%
+  select(-stress_level, -stress_binary)
+
+test_knn <- test_data %>%
+  select(-stress_level, -stress_binary)
+
+# Create dummy variables for categorical predictors
+dummy_model <- dummyVars(~ ., data = train_knn)
+
+train_x <- predict(dummy_model, newdata = train_knn)
+test_x <- predict(dummy_model, newdata = test_knn)
+
+# Scale data using training data values
+train_x <- scale(train_x)
+
+test_x <- scale(
+  test_x,
+  center = attr(train_x, "scaled:center"),
+  scale = attr(train_x, "scaled:scale")
+)
+
+# Fit KNN model
+knn_pred <- knn(
+  train = train_x,
+  test = test_x,
+  cl = train_data$stress_binary,
+  k = 5
+)
+
+knn_pred <- factor(
+  knn_pred,
+  levels = c("Low Stress", "High Stress")
+)
+
+# Evaluate KNN
+knn_cm <- confusionMatrix(
+  knn_pred,
+  test_data$stress_binary,
+  positive = "High Stress"
+)
+
+knn_cm
+```
+
+# Lasso Logistic Regression 
+```{r} 
+# Create model matrix for LASSO
+x_train <- model.matrix(
+  stress_binary ~ sleep_duration_hours +
+    daily_screen_time_hours +
+    age +
+    caffeine_intake_cups +
+    sleep_quality_score +
+    phone_usage_before_sleep_minutes +
+    physical_activity_minutes +
+    notifications_received_per_day +
+    mental_fatigue_score +
+    gender +
+    occupation +
+    sleep_screen_interaction,
+  data = train_data
+)[, -1]
+
+x_test <- model.matrix(
+  stress_binary ~ sleep_duration_hours +
+    daily_screen_time_hours +
+    age +
+    caffeine_intake_cups +
+    sleep_quality_score +
+    phone_usage_before_sleep_minutes +
+    physical_activity_minutes +
+    notifications_received_per_day +
+    mental_fatigue_score +
+    gender +
+    occupation +
+    sleep_screen_interaction,
+  data = test_data
+)[, -1]
+
+# Convert outcome to numeric for glmnet
+y_train <- ifelse(train_data$stress_binary == "High Stress", 1, 0)
+
+# Fit LASSO model
+set.seed(123)
+
+lasso_model <- cv.glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 1
+)
+
+# Best lambda
+lasso_model$lambda.min
+
+# Predict probabilities
+lasso_prob <- predict(
+  lasso_model,
+  s = "lambda.min",
+  newx = x_test,
+  type = "response"
+)
+
+lasso_prob <- as.numeric(lasso_prob)
+
+# Convert probabilities into predicted classes
+lasso_pred <- ifelse(
+  lasso_prob > 0.5,
+  "High Stress",
+  "Low Stress"
+)
+
+lasso_pred <- factor(
+  lasso_pred,
+  levels = c("Low Stress", "High Stress")
+)
+
+# Evaluate LASSO
+lasso_cm <- confusionMatrix(
+  lasso_pred,
+  test_data$stress_binary,
+  positive = "High Stress"
+)
+
+lasso_cm
+
+# AUC
+roc_lasso <- roc(
+  test_data$stress_binary,
+  lasso_prob,
+  levels = c("Low Stress", "High Stress")
+)
+
+auc(roc_lasso)
+
+# Brier score
+lasso_brier <- mean((lasso_prob - actual_numeric)^2)
+lasso_brier
+
+# View LASSO coefficients
+coef(lasso_model, s = "lambda.min")
+```
+
+# Ridge Regression
+```{r}
+# Ridge uses alpha = 0
+set.seed(123)
+
+ridge_model <- cv.glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 0
+)
+
+# Predict probabilities
+ridge_prob <- predict(
+  ridge_model,
+  s = "lambda.min",
+  newx = x_test,
+  type = "response"
+)
+
+ridge_prob <- as.numeric(ridge_prob)
+
+# Convert probabilities into predicted classes
+ridge_pred <- ifelse(
+  ridge_prob > 0.5,
+  "High Stress",
+  "Low Stress"
+)
+
+ridge_pred <- factor(
+  ridge_pred,
+  levels = c("Low Stress", "High Stress")
+)
+
+# Evaluate Ridge
+ridge_cm <- confusionMatrix(
+  ridge_pred,
+  test_data$stress_binary,
+  positive = "High Stress"
+)
+
+ridge_cm
+
+# AUC
+roc_ridge <- roc(
+  test_data$stress_binary,
+  ridge_prob,
+  levels = c("Low Stress", "High Stress")
+)
+
+auc(roc_ridge)
+
+# Brier score
+ridge_brier <- mean((ridge_prob - actual_numeric)^2)
+ridge_brier
+```
+
+# Elastic Net Logistic Regression
+```{r}
+
+# Elastic Net uses alpha between 0 and 1
+# Here, alpha = 0.5 gives a balance between Ridge and LASSO
+set.seed(123)
+
+elastic_model <- cv.glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 0.5
+)
+
+# Predict probabilities
+elastic_prob <- predict(
+  elastic_model,
+  s = "lambda.min",
+  newx = x_test,
+  type = "response"
+)
+
+elastic_prob <- as.numeric(elastic_prob)
+
+# Convert probabilities into predicted classes
+elastic_pred <- ifelse(
+  elastic_prob > 0.5,
+  "High Stress",
+  "Low Stress"
+)
+
+elastic_pred <- factor(
+  elastic_pred,
+  levels = c("Low Stress", "High Stress")
+)
+
+# Evaluate Elastic Net
+elastic_cm <- confusionMatrix(
+  elastic_pred,
+  test_data$stress_binary,
+  positive = "High Stress"
+)
+
+elastic_cm
+
+# AUC
+roc_elastic <- roc(
+  test_data$stress_binary,
+  elastic_prob,
+  levels = c("Low Stress", "High Stress")
+)
+
+auc(roc_elastic)
+
+# Brier score
+elastic_brier <- mean((elastic_prob - actual_numeric)^2)
+elastic_brier
+
+```
+
+# Model Comparison 
+```{r} 
+# Create final model comparison table
+model_results <- data.frame(
+  Model = c(
+    "Logistic Regression",
+    "Decision Tree",
+    "Random Forest",
+    "KNN",
+    "LASSO",
+    "Ridge",
+    "Elastic Net"
+  ),
+  Accuracy = c(
+    log_cm$overall["Accuracy"],
+    tree_cm$overall["Accuracy"],
+    rf_cm$overall["Accuracy"],
+    knn_cm$overall["Accuracy"],
+    lasso_cm$overall["Accuracy"],
+    ridge_cm$overall["Accuracy"],
+    elastic_cm$overall["Accuracy"]
+  ),
+  Sensitivity = c(
+    log_cm$byClass["Sensitivity"],
+    tree_cm$byClass["Sensitivity"],
+    rf_cm$byClass["Sensitivity"],
+    knn_cm$byClass["Sensitivity"],
+    lasso_cm$byClass["Sensitivity"],
+    ridge_cm$byClass["Sensitivity"],
+    elastic_cm$byClass["Sensitivity"]
+  ),
+  Specificity = c(
+    log_cm$byClass["Specificity"],
+    tree_cm$byClass["Specificity"],
+    rf_cm$byClass["Specificity"],
+    knn_cm$byClass["Specificity"],
+    lasso_cm$byClass["Specificity"],
+    ridge_cm$byClass["Specificity"],
+    elastic_cm$byClass["Specificity"]
+  ),
+  F1 = c(
+    log_cm$byClass["F1"],
+    tree_cm$byClass["F1"],
+    rf_cm$byClass["F1"],
+    knn_cm$byClass["F1"],
+    lasso_cm$byClass["F1"],
+    ridge_cm$byClass["F1"],
+    elastic_cm$byClass["F1"]
+  ),
+  AUC = c(
+    auc(roc_log),
+    auc(roc_tree),
+    auc(roc_rf),
+    NA,
+    auc(roc_lasso),
+    auc(roc_ridge),
+    auc(roc_elastic)
+  ),
+  Brier = c(
+    log_brier,
+    tree_brier,
+    rf_brier,
+    NA,
+    lasso_brier,
+    ridge_brier,
+    elastic_brier
+  )
+)
+
+# Display table
+kable(
+  model_results,
+  digits = 2,
+  caption = "Model Performance Comparison",
+  col.names = c(
+    "Model",
+    "Acc",
+    "Sens",
+    "Spec",
+    "F1",
+    "AUC",
+    "Brier"
+  )
+)
+
+kable(
+  model_results,
+  digits = 3,
+  caption = "Model Performance Comparison"
+)
+
+```
+
+```{r}
+# Create plotting dataset
+plot_results <- model_results %>%
+  select(Model, Accuracy, AUC) %>%
+  pivot_longer(
+    cols = c(Accuracy, AUC),
+    names_to = "Metric",
+    values_to = "Value"
+  )
+
+# Plot model performance
+ggplot(plot_results,
+       aes(x = Model,
+           y = Value,
+           fill = Metric)) +
+  geom_bar(
+    stat = "identity",
+    position = "dodge",
+    color = "black"
+  ) +
+  labs(
+    title = "Model Performance Comparison",
+    x = "Model",
+    y = "Performance Value"
+  ) +
+  ylim(0, 1) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 20, hjust = 1)
+  )
+```
+
+# ROC Curves 
+```{r} 
+# Plot logistic regression ROC
+plot(
+  roc_log,
+  col = "blue",
+  lwd = 2,
+  main = "ROC Curves for Classification Models"
+)
+
+# Add other ROC curves
+lines(roc_tree, col = "red", lwd = 2)
+lines(roc_rf, col = "darkgreen", lwd = 2)
+lines(roc_lasso, col = "purple", lwd = 2)
+lines(roc_ridge, col = "orange", lwd = 2)
+lines(roc_elastic, col = "brown", lwd = 2)
+
+# Add diagonal reference line
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Add legend
+legend(
+  "bottomright",
+  legend = c(
+    "Logistic Regression",
+    "Decision Tree",
+    "Random Forest",
+    "LASSO",
+    "Ridge",
+    "Elastic Net"
+  ),
+  col = c(
+    "blue",
+    "red",
+    "darkgreen",
+    "purple",
+    "orange",
+    "brown"
+  ),
+  lwd = 2,
+  cex = 0.8
+)
+```
+
+# Screen Time and Stress Relationship
+```{r fig.width=8, fig.height=6}
+
+ggplot(stress_data,
+       aes(x = daily_screen_time_hours,
+           y = stress_level)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Relationship Between Screen Time and Stress",
+    x = "Daily Screen Time (Hours)",
+    y = "Stress Level"
+  ) +
+  theme_minimal()
+```
+
+
+# Sleep Duration and Stress
+```{r fig.width=8, fig.height=6}
+
+ggplot(stress_data,
+       aes(x = sleep_duration_hours,
+           y = stress_level)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Figure 6. Relationship Between Sleep Duration and Stress",
+    x = "Sleep Duration (Hours)",
+    y = "Stress Level"
+  ) +
+  theme_minimal()
+```
+
+# Predicted Probability Plot 
+```{r}
+test_data$rf_prob <- rf_prob
+
+ggplot(test_data, aes(x = rf_prob, fill = stress_binary)) +
+  geom_histogram(bins = 30, alpha = 0.7, position = "identity") +
+  labs(
+    title = "Predicted Stress Probability from Random Forest",
+    x = "Predicted Probability of High Stress",
+    y = "Count",
+    fill = "Actual Stress Status"
+  ) +
+  theme_minimal()
+```
+
+
+Save Results 
+```{r} 
+write.csv(model_results, "model_results.csv", row.names = FALSE)
+```
+
+
+
